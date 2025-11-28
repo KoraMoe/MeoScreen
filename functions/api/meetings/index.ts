@@ -1,5 +1,8 @@
 // POST /api/meetings - Create a new meeting
 
+import { checkRateLimit, getClientIP, RATE_LIMITS } from '../../lib/ratelimit'
+import { validateRoomId, validateUserName, parseJsonSafely } from '../../lib/validation'
+
 interface Env {
   RTK_API_KEY: string
   RTK_APP_ID: string
@@ -14,28 +17,75 @@ interface CreateMeetingRequest {
 
 const RTK_API_URL = 'https://api.realtime.cloudflare.com/v2'
 
+// CORS headers
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type',
+}
+
 export const onRequestPost: PagesFunction<Env> = async (context) => {
   const { request, env } = context
+  const clientIP = getClientIP(request)
 
-  // CORS headers
-  const corsHeaders = {
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
+  // Check global rate limit
+  const globalLimit = await checkRateLimit(env.ROOMS, `global:${clientIP}`, RATE_LIMITS.global)
+  if (!globalLimit.allowed) {
+    return new Response(
+      JSON.stringify({ error: 'Too many requests. Please try again later.' }),
+      { 
+        status: 429, 
+        headers: { 
+          ...corsHeaders, 
+          'Content-Type': 'application/json',
+          'Retry-After': String(globalLimit.resetAt - Math.floor(Date.now() / 1000)),
+        } 
+      }
+    )
   }
 
-  // Handle preflight
-  if (request.method === 'OPTIONS') {
-    return new Response(null, { headers: corsHeaders })
+  // Check create room rate limit
+  const createLimit = await checkRateLimit(env.ROOMS, `create:${clientIP}`, RATE_LIMITS.createRoom)
+  if (!createLimit.allowed) {
+    return new Response(
+      JSON.stringify({ error: 'Too many rooms created. Please try again later.' }),
+      { 
+        status: 429, 
+        headers: { 
+          ...corsHeaders, 
+          'Content-Type': 'application/json',
+          'Retry-After': String(createLimit.resetAt - Math.floor(Date.now() / 1000)),
+        } 
+      }
+    )
   }
 
   try {
-    const body: CreateMeetingRequest = await request.json()
+    // Parse and validate request body
+    const { data: body, error: parseError } = await parseJsonSafely<CreateMeetingRequest>(request)
+    if (parseError || !body) {
+      return new Response(
+        JSON.stringify({ error: parseError || 'Invalid request body' }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      )
+    }
+
     const { roomId, userName } = body
 
-    if (!roomId || !userName) {
+    // Validate roomId
+    const roomIdValidation = validateRoomId(roomId)
+    if (!roomIdValidation.valid) {
       return new Response(
-        JSON.stringify({ error: 'roomId and userName are required' }),
+        JSON.stringify({ error: roomIdValidation.error }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      )
+    }
+
+    // Validate userName
+    const userNameValidation = validateUserName(userName)
+    if (!userNameValidation.valid) {
+      return new Response(
+        JSON.stringify({ error: userNameValidation.error }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       )
     }
@@ -89,7 +139,7 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        name: userName,
+        name: userName.trim(),
         preset_name: 'group_call_host',
       }),
     })
@@ -97,6 +147,8 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
     if (!participantResponse.ok) {
       const errorText = await participantResponse.text()
       console.error('Failed to add participant:', errorText)
+      // Clean up the room mapping since we failed
+      await env.ROOMS.delete(roomId)
       return new Response(
         JSON.stringify({ error: 'Failed to add participant' }),
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
@@ -123,12 +175,5 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
 
 // Handle CORS preflight
 export const onRequestOptions: PagesFunction = async () => {
-  return new Response(null, {
-    headers: {
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'POST, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type',
-    },
-  })
+  return new Response(null, { headers: corsHeaders })
 }
-

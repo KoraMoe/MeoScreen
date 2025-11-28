@@ -11,6 +11,7 @@ A real-time P2P screen sharing application with voice and text chat, built with 
 - 👤 **User Names** - Enter your name each time you join
 - 🌐 **WebRTC** - Low-latency peer-to-peer connections
 - ☁️ **Full-Stack** - Backend API included, deploys together on Cloudflare Pages
+- 🛡️ **Protected** - Rate limiting and input validation to prevent abuse
 
 ## Tech Stack
 
@@ -105,11 +106,14 @@ Then configure environment variables and KV bindings in the Cloudflare dashboard
 
 ```
 ├── functions/              # Cloudflare Pages Functions (Backend)
-│   └── api/
-│       └── meetings/
-│           ├── index.ts    # POST /api/meetings - Create room
-│           └── [roomId]/
-│               └── join.ts # POST /api/meetings/:roomId/join
+│   ├── api/
+│   │   └── meetings/
+│   │       ├── index.ts    # POST /api/meetings - Create room
+│   │       └── [roomId]/
+│   │           └── join.ts # POST /api/meetings/:roomId/join
+│   └── lib/
+│       ├── ratelimit.ts    # Rate limiting utility
+│       └── validation.ts   # Input validation
 ├── src/                    # Frontend React App
 │   ├── components/         # UI components
 │   ├── pages/              # Page components
@@ -203,6 +207,32 @@ RTK_APP_ID=your-app-id
 2. Enter the 6-character room code
 3. Enter your display name
 4. Watch the host's screen share
+
+## Security
+
+The backend includes built-in protection against abuse:
+
+### Rate Limiting
+
+| Action | Limit | Window |
+|--------|-------|--------|
+| Create Room | 5 requests | per minute per IP |
+| Join Room | 10 requests | per minute per IP |
+| Global | 30 requests | per minute per IP |
+
+Rate limit data is stored in KV with automatic expiration.
+
+### Input Validation
+
+- **Room ID**: Must be 4-10 alphanumeric uppercase characters
+- **Username**: Must be 1-30 characters, no control characters
+- **Request Body**: Maximum 1KB payload size
+
+### Additional Protections
+
+- Room codes expire after 24 hours
+- Proper error messages without leaking internal details
+- CORS headers configured for cross-origin requests
 
 ## Browser Support
 

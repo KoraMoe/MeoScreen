@@ -1,5 +1,8 @@
 // POST /api/meetings/:roomId/join - Join an existing meeting
 
+import { checkRateLimit, getClientIP, RATE_LIMITS } from '../../../lib/ratelimit'
+import { validateRoomId, validateUserName, parseJsonSafely } from '../../../lib/validation'
+
 interface Env {
   RTK_API_KEY: string
   RTK_APP_ID: string
@@ -12,29 +15,76 @@ interface JoinMeetingRequest {
 
 const RTK_API_URL = 'https://api.realtime.cloudflare.com/v2'
 
+// CORS headers
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type',
+}
+
 export const onRequestPost: PagesFunction<Env> = async (context) => {
   const { request, env, params } = context
   const roomId = params.roomId as string
+  const clientIP = getClientIP(request)
 
-  // CORS headers
-  const corsHeaders = {
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
+  // Check global rate limit
+  const globalLimit = await checkRateLimit(env.ROOMS, `global:${clientIP}`, RATE_LIMITS.global)
+  if (!globalLimit.allowed) {
+    return new Response(
+      JSON.stringify({ error: 'Too many requests. Please try again later.' }),
+      { 
+        status: 429, 
+        headers: { 
+          ...corsHeaders, 
+          'Content-Type': 'application/json',
+          'Retry-After': String(globalLimit.resetAt - Math.floor(Date.now() / 1000)),
+        } 
+      }
+    )
   }
 
-  // Handle preflight
-  if (request.method === 'OPTIONS') {
-    return new Response(null, { headers: corsHeaders })
+  // Check join room rate limit
+  const joinLimit = await checkRateLimit(env.ROOMS, `join:${clientIP}`, RATE_LIMITS.joinRoom)
+  if (!joinLimit.allowed) {
+    return new Response(
+      JSON.stringify({ error: 'Too many join attempts. Please try again later.' }),
+      { 
+        status: 429, 
+        headers: { 
+          ...corsHeaders, 
+          'Content-Type': 'application/json',
+          'Retry-After': String(joinLimit.resetAt - Math.floor(Date.now() / 1000)),
+        } 
+      }
+    )
+  }
+
+  // Validate roomId from URL
+  const roomIdValidation = validateRoomId(roomId)
+  if (!roomIdValidation.valid) {
+    return new Response(
+      JSON.stringify({ error: roomIdValidation.error }),
+      { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+    )
   }
 
   try {
-    const body: JoinMeetingRequest = await request.json()
+    // Parse and validate request body
+    const { data: body, error: parseError } = await parseJsonSafely<JoinMeetingRequest>(request)
+    if (parseError || !body) {
+      return new Response(
+        JSON.stringify({ error: parseError || 'Invalid request body' }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      )
+    }
+
     const { userName } = body
 
-    if (!userName) {
+    // Validate userName
+    const userNameValidation = validateUserName(userName)
+    if (!userNameValidation.valid) {
       return new Response(
-        JSON.stringify({ error: 'userName is required' }),
+        JSON.stringify({ error: userNameValidation.error }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       )
     }
@@ -59,7 +109,7 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        name: userName,
+        name: userName.trim(),
         preset_name: 'group_call_participant',
       }),
     })
@@ -103,12 +153,5 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
 
 // Handle CORS preflight
 export const onRequestOptions: PagesFunction = async () => {
-  return new Response(null, {
-    headers: {
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'POST, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type',
-    },
-  })
+  return new Response(null, { headers: corsHeaders })
 }
-
