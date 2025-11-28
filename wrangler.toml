@@ -1,0 +1,13 @@
+name = "meoscreen"
+compatibility_date = "2024-01-01"
+pages_build_output_dir = "dist"
+
+# KV namespace for storing room -> meeting ID mappings
+[[kv_namespaces]]
+binding = "ROOMS"
+id = "4743bcf7acde4d1fb93589aa8912110f"
+
+# Environment variables (set these in Cloudflare dashboard)
+# RTK_API_KEY = "your-realtimekit-api-key"
+# RTK_APP_ID = "your-realtimekit-app-id"
+
